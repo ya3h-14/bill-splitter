@@ -58,3 +58,58 @@ bills.post('/homes/:homeId/bills', async (c) => {
 
   return c.json({ id: billId, homeId, title, totalCents, shares }, 201)
 })
+type ListedShare = {
+  id: string
+  billId: string
+  memberId: string
+  memberName: string
+  amountCents: number
+  paidAt: string | null
+}
+
+bills.get('/homes/:homeId/bills', async (c) => {
+  const homeId = c.req.param('homeId')
+
+  const home = await c.env.DB.prepare('SELECT id, name FROM homes WHERE id = ?')
+    .bind(homeId)
+    .first<{ id: string; name: string }>()
+  if (home === null) {
+    return c.json({ error: 'home not found' }, 404)
+  }
+
+  const { results: billRows } = await c.env.DB.prepare(
+    'SELECT id, title, total_cents AS totalCents FROM bills WHERE home_id = ? ORDER BY rowid DESC',
+  )
+    .bind(homeId)
+    .all<{ id: string; title: string; totalCents: number }>()
+
+  const { results: shareRows } = await c.env.DB.prepare(
+    `SELECT s.id AS id, s.bill_id AS billId, s.member_id AS memberId, m.name AS memberName,
+            s.amount_cents AS amountCents, s.paid_at AS paidAt
+     FROM shares s
+     JOIN members m ON m.id = s.member_id
+     JOIN bills b ON b.id = s.bill_id
+     WHERE b.home_id = ?
+     ORDER BY m.seq`,
+  )
+    .bind(homeId)
+    .all<ListedShare>()
+
+  const sharesByBill = new Map<string, Omit<ListedShare, 'billId'>[]>()
+  for (const { billId, ...share } of shareRows) {
+    const list = sharesByBill.get(billId) ?? []
+    list.push(share)
+    sharesByBill.set(billId, list)
+  }
+
+  return c.json({
+    homeName: home.name,
+    bills: billRows.map((bill) => ({
+      id: bill.id,
+      homeId,
+      title: bill.title,
+      totalCents: bill.totalCents,
+      shares: sharesByBill.get(bill.id) ?? [],
+    })),
+  })
+})
